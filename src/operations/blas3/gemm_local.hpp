@@ -274,7 +274,7 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
 
     auto scratch = scratch_acc.localAcc.get_pointer();
     using ScratchPointerType = decltype(scratch);
-    PointerWrapper<ScratchPointerType> s1, s2, s3, s4;
+    // PointerWrapper<ScratchPointerType> s1, s2, s3, s4;
     // The number of work-group required to executed each batch efficiently
     const index_t wg_id = id.get_group(0) % get_workgroup_cluster(m_, n_);
 
@@ -283,17 +283,19 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
     const index_t c_size = ldc_ * n_;
     // PointerWrapper orig_A, orig_B, orig_C;
 
-    auto orig_A = a_.get_data().get_pointer() + a_.get_access_displacement() +
-                  (wg_batch_id * a_size);
-    auto orig_B = b_.get_data().get_pointer() + b_.get_access_displacement() +
-                  (wg_batch_id * b_size);
-    auto orig_C = c_.get_data().get_pointer() + c_.get_access_displacement() +
-                  (wg_batch_id * c_size);
-    using PointerType = decltype(orig_A);
-    PointerWrapper<PointerType> ptr_A{orig_A, orig_A};
-    PointerWrapper<PointerType> ptr_B{orig_B, orig_B};
-    PointerWrapper<PointerType> ptr_C{orig_C, orig_C};
-
+    auto ptr_A = a_.get_data().get_pointer() + a_.get_access_displacement() +
+                 (wg_batch_id * a_size);
+    auto ptr_B = b_.get_data().get_pointer() + b_.get_access_displacement() +
+                 (wg_batch_id * b_size);
+    auto ptr_C = c_.get_data().get_pointer() + c_.get_access_displacement() +
+                 (wg_batch_id * c_size);
+    // using PointerType = decltype(orig_A);
+    // PointerWrapper<PointerType> ptr_A{orig_A, orig_A};
+    // PointerWrapper<PointerType> ptr_B{orig_B, orig_B};
+    // PointerWrapper<PointerType> ptr_C{orig_C, orig_C};
+    // auto ptr_A = orig_A;
+    // auto ptr_B = orig_B;
+    // auto ptr_C = orig_C;
     const index_t item_id = id.get_local_id(0);
     const index_t tile_id = wg_id / tile_size;
     const index_t tile_local_id = wg_id % tile_size;
@@ -314,61 +316,64 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
 
     element_t reg_a[item_rows];
     element_t reg_b;
-    ptr_C.ptr += wg_row + (item_id % wg_rows) + col * ldc_;
-    ptr_C.ptr_vec += row + col * ldc_;
+    // ptr_C.ptr += wg_row + (item_id % wg_rows) + col * ldc_;
+    ptr_C += row + col * ldc_;
 
     // printf("[%d/%d] row:%d col:%d c_ofs: %d\n", wg_id, item_id, row, col,
     //        static_cast<int>(orig_C - test_c));
     const index_t mc = m_ - row;
     const index_t nc = n_ - col;
 
-    ptr_B.ptr_vec += (trans_b ? (item_id_ofs / block_cols) * ldb_ +
-                                    (wg_col + item_id_ofs % block_cols)
-                              : item_id_ofs % cl_elems +
-                                    (wg_col + item_id_ofs / cl_elems) * ldb_);
+    ptr_B += (trans_b ? (item_id_ofs / block_cols) * ldb_ +
+                            (wg_col + item_id_ofs % block_cols)
+                      : item_id_ofs % cl_elems +
+                            (wg_col + item_id_ofs / cl_elems) * ldb_);
 
-    ptr_B.ptr +=
-        (trans_b
-             ? (item_id / block_cols) * ldb_ + (wg_col + item_id % block_cols)
-             : item_id % cl_elems + (wg_col + item_id / cl_elems) * ldb_);
+    // ptr_B.ptr +=
+    //     (trans_b
+    //          ? (item_id / block_cols) * ldb_ + (wg_col + item_id %
+    //          block_cols) : item_id % cl_elems + (wg_col + item_id / cl_elems)
+    //          * ldb_);
     n_ = n_ - wg_col -
          (trans_b ? item_id_ofs % block_cols : item_id_ofs / cl_elems);
-    ptr_A.ptr_vec += (trans_a ? (wg_row + item_id_ofs / cl_elems) * lda_ +
-                                    (item_id_ofs % cl_elems)
-                              : (wg_row + item_id_ofs % block_rows) +
-                                    (item_id_ofs / block_rows) * lda_);
+    ptr_A += (trans_a ? (wg_row + item_id_ofs / cl_elems) * lda_ +
+                            (item_id_ofs % cl_elems)
+                      : (wg_row + item_id_ofs % block_rows) +
+                            (item_id_ofs / block_rows) * lda_);
     // printf("[%d/%d] %d + %d * %d = %d\n", item_id, wg_id,
     //        (wg_row + item_id_ofs % block_rows), (item_id_ofs / block_rows),
     //        lda_,
     //        (wg_row + item_id_ofs % block_rows) +
     //            (item_id_ofs / block_rows) * lda_);
-    ptr_A.ptr +=
-        (trans_a
-             ? (wg_row + item_id / cl_elems) * lda_ + (item_id % cl_elems)
-             : (wg_row + item_id % block_rows) + (item_id / block_rows) * lda_);
+    // ptr_A.ptr +=
+    //     (trans_a
+    //          ? (wg_row + item_id / cl_elems) * lda_ + (item_id % cl_elems)
+    //          : (wg_row + item_id % block_rows) + (item_id / block_rows) *
+    //          lda_);
 
     m_ = m_ - wg_row -
          (trans_a ? item_id / cl_elems * vector_offset
                   : item_id % block_rows * vector_offset);
 
-    s1.ptr = scratch +
-             (trans_b ? item_id / block_cols + (item_id % block_cols) * ldsb
-                      : item_id % cl_elems + (item_id / cl_elems) * ldsb);
-    s1.ptr_vec =
+    // s1.ptr = scratch +
+    //          (trans_b ? item_id / block_cols + (item_id % block_cols) * ldsb
+    //                   : item_id % cl_elems + (item_id / cl_elems) * ldsb);
+    auto s1 =
         scratch +
         (trans_b ? item_id_ofs / block_cols + (item_id_ofs % block_cols) * ldsb
                  : item_id_ofs % cl_elems + (item_id_ofs / cl_elems) * ldsb);
-    s2.ptr = scratch + (item_id / wg_rows) * item_cols * ldsb;
+    auto s2 = scratch + (item_id / wg_rows) * item_cols * ldsb;
     const index_t ofs = (double_buffer + 1) * block_cols * ldsb;
-    s3.ptr = scratch + ofs +
-             (trans_a ? item_id / cl_elems + (item_id % cl_elems) * ldsa
-                      : item_id % block_rows + (item_id / block_rows) * ldsa);
-    s3.ptr_vec =
+    // s3.ptr = scratch + ofs +
+    //          (trans_a ? item_id / cl_elems + (item_id % cl_elems) * ldsa
+    //                   : item_id % block_rows + (item_id / block_rows) *
+    //                   ldsa);
+    auto s3 =
         scratch + ofs +
         (trans_a
              ? item_id_ofs / cl_elems + (item_id_ofs % cl_elems) * ldsa
              : item_id_ofs % block_rows + (item_id_ofs / block_rows) * ldsa);
-    s4.ptr = scratch + ofs + (item_id % wg_rows * vector_offset);
+    auto s4 = scratch + ofs + (item_id % wg_rows * vector_offset);
     // printf("[%d/%d] a: %d b: %d sa: %d sb: %d m: %d n: %d\n", wg_id, item_id,
     //        static_cast<int>(orig_A - test_ptr),
     //        static_cast<int>(orig_B - test_ptrb), static_cast<int>(s2 -
@@ -480,33 +485,31 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
       auto A = orig_A;
       auto B = orig_B;
       auto C = orig_C;
-      element_t reg_res[item_rows][item_cols] = {};
+      element_t reg_res[item_rows * item_cols] = {};
       while (k >= cl_elems) {
         extract_input_blocks<check_m_limit, check_n_limit, false>(
-            item_id, m, n, k, A.ptr_vec, lda, B.ptr_vec, ldb, s1.ptr_vec,
-            s3.ptr_vec, out_of_range);
+            item_id, m, n, k, A, lda, B, ldb, s1, s3, out_of_range);
         id.barrier(cl::sycl::access::fence_space::local_space);
-        compute_block_gemm<(!check_m_limit && !check_n_limit)>(
-            item_id, s2.ptr, s4.ptr, reg_a, reg_b, reg_res);
-        A.ptr += cl_elems * (trans_a ? 1 : lda);
-        A.ptr_vec += cl_elems * (trans_a ? 1 : lda);
-        B.ptr += cl_elems * (trans_b ? ldb : 1);
-        B.ptr_vec += cl_elems * (trans_b ? ldb : 1);
+        compute_block_gemm<check_m_limit, check_n_limit>(item_id, s2, s4, reg_a,
+                                                         reg_b, reg_res);
+        A += cl_elems * (trans_a ? 1 : lda);
+        // A.ptr_vec += cl_elems * (trans_a ? 1 : lda);
+        B += cl_elems * (trans_b ? ldb : 1);
+        // B.ptr_vec += cl_elems * (trans_b ? ldb : 1);
         k -= cl_elems;
         sync_smem<double_buffer, block_cols * ldsb, block_cols * ldsb,
                   ldsa * cl_elems, ldsa * cl_elems>(id, ofs, s1, s2, s3, s4);
         // if (id.get_group(0) == WG_TO_PRINT)
-        //   print_mat<WG_TO_PRINT, cl_elems, ldsb>(item_id, s1.ptr);
+        //   print_array<item_rows * item_cols>(item_id, reg_res);
         // id.barrier();
       }
 
       if (k > 0) {
         extract_input_blocks<check_m_limit, check_n_limit, true>(
-            item_id, m, n, k, A.ptr, lda, B.ptr, ldb, s1.ptr, s3.ptr,
-            out_of_range);
+            item_id, m, n, k, A, lda, B, ldb, s1, s3, out_of_range);
         id.barrier(cl::sycl::access::fence_space::local_space);
-        compute_block_gemm<(!check_m_limit && !check_n_limit)>(
-            item_id, s2.ptr, s4.ptr, reg_a, reg_b, reg_res);
+        compute_block_gemm<check_m_limit, check_n_limit>(item_id, s2, s4, reg_a,
+                                                         reg_b, reg_res);
 
         sync_smem<double_buffer, block_cols * ldsb, block_cols * ldsb,
                   ldsa * cl_elems, ldsa * cl_elems>(id, ofs, s1, s2, s3, s4);
@@ -514,17 +517,20 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
         // if (id.get_group(0) == WG_TO_PRINT)
         //   print_mat<WG_TO_PRINT, ldsa, cl_elems>(item_id, s3.ptr);
         // id.barrier();
+        // if (id.get_group(0) == WG_TO_PRINT)
+        //   print_array<item_rows * item_cols>(item_id, reg_res);
+        // id.barrier();
       }
 
       // store the output
       store_output_block<check_m_limit, check_n_limit>(
-          item_id, mc, nc, alpha, beta, C.ptr_vec, ldc, reg_res, out_of_range);
-      orig_A.ptr += (a_size * batch_stride);
-      orig_A.ptr_vec += (a_size * batch_stride);
-      orig_B.ptr += (b_size * batch_stride);
-      orig_B.ptr_vec += (b_size * batch_stride);
-      orig_C.ptr += (c_size * batch_stride);
-      orig_C.ptr_vec += (c_size * batch_stride);
+          item_id, mc, nc, alpha, beta, C, ldc, reg_res, out_of_range);
+      orig_A += (a_size * batch_stride);
+      // orig_A.ptr_vec += (a_size * batch_stride);
+      orig_B += (b_size * batch_stride);
+      // orig_B.ptr_vec += (b_size * batch_stride);
+      orig_C += (c_size * batch_stride);
+      // orig_C.ptr_vec += (c_size * batch_stride);
       k = orig_k;
       // batch_size_ must be signed as the negative value has meaning here.
       batch_size -= batch_stride;
@@ -550,34 +556,72 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
   //     }
   //     return value;
   //   }
-  template <bool internal, typename OutputPointerType>
+  template <bool internal, index_t p_size = packet_size,
+            typename OutputPointerType>
   static SYCL_BLAS_INLINE typename std::enable_if<!internal>::type store_packet(
-      value_t *reg, OutputPointerType out_ptr, index_t j, element_t alpha,
-      element_t beta, index_t item_id) {
-    *out_ptr = alpha * reg[j * item_cols] + beta * *out_ptr;
+      element_t *reg, OutputPointerType out_ptr, element_t alpha,
+      element_t beta) {
+    *out_ptr = alpha * *reg + beta * *out_ptr;
     // *out_ptr = item_id;
   }
-  template <bool internal, typename OutputPointerType>
+  /*template<typename T = vector_t>
+    static SYCL_BLAS_INLINE typename std::enable_if<typename
+    std::is_same<vector_t, cl::sycl::float4>::type, float >::type
+    scalarize(Index i, x){ switch(i ) { case 1 : return x.x() case 2: return
+    x.y(); case 3: return x.z(); case 4 return x.w();
+      }
+      __builtin_unreachable();
+    }*/
+  // template <index_t p_size = packet_size>
+  // static SYCL_BLAS_INLINE typename std::enable_if<(p_size == 1)>::type
+  // set_scalar(index_t i, vector_t &x, element_t &val) {
+  //   x = val;
+  // }
+  // template <index_t p_size = packet_size>
+  // static SYCL_BLAS_INLINE typename std::enable_if<(p_size > 1)>::type
+  // set_scalar(index_t i, vector_t &x, element_t &val) {
+  //   switch (i) {
+  //     case 1:
+  //       x.x() = val;
+  //       return;
+  //     case 2:
+  //       x.y() = val;
+  //       return;
+  //     case 3:
+  //       x.z() = val;
+  //       return;
+  //     case 4:
+  //       x.w() = val;
+  //       return;
+  //   }
+  //   __builtin_unreachable();
+  // }
+
+  template <bool internal, index_t p_size = packet_size,
+            typename OutputPointerType>
   static SYCL_BLAS_INLINE typename std::enable_if<internal>::type store_packet(
-      value_t *reg, OutputPointerType out_ptr, index_t j, element_t alpha,
-      element_t beta, index_t item_id) {
-    constexpr auto stride = packet_size;
+      element_t *reg, OutputPointerType out_ptr, element_t &alpha,
+      element_t &beta) {
     vector_t out_vec{0};
     // value_t* out[stride];
-#pragma unroll
-    for (int i = 0; i < stride; i++) {
-      reinterpret_cast<value_t *>(&out_vec)[i] =
-          reg[(j * stride + i) * item_cols];
-    }
-    vector_t tmp{0};
+    // #pragma unroll
+    //     for (int i = 0; i < packet_size; i++) {
+    //       reinterpret_cast<element_t *>(&out_vec)[i] = *(reg);
+    //       // set_scalar(i, out_vec, *(reg + i * item_cols));
+    //     }
+    out_vec.template load<address_t::private_space>(0, reg);
+    out_vec *= alpha;
+
     if (!is_beta_zero) {
+      vector_t tmp{0};
       tmp.template load<address_t::global_space>(0, out_ptr);
       tmp *= beta;
+      out_vec += tmp;
     }
-    tmp += (alpha * out_vec);
+    // tmp += (alpha * out_vec);
     // tmp = vector_t{static_cast<float>(item_id)};
     // printf("value: %f\n", reinterpret_cast<value_t *>(&out_vec)[0]);
-    tmp.template store<address_t::global_space>(0, out_ptr);
+    out_vec.template store<address_t::global_space>(0, out_ptr);
   }
   /*!
    * @brief Store the computed gemm result to the C matrix
@@ -600,15 +644,13 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
   template <bool check_m_limit, bool check_n_limit, typename OutputPointerType>
   static SYCL_BLAS_INLINE void store_output_block(
       index_t item_id, index_t mc, index_t nc, element_t alpha, element_t beta,
-      OutputPointerType C, index_t ldc,
-      element_t (&reg_res)[item_rows][item_cols],
+      OutputPointerType C, index_t ldc, element_t *reg_res,
       const bool out_of_range) noexcept {
     if (out_of_range) {
       return;
     }
-    const bool aligned = ldc % packet_size == 0;
-    constexpr bool internal = !check_m_limit && !check_n_limit;
-    constexpr index_t offset = internal ? packet_size : 1;
+    constexpr index_t offset =
+        (!check_m_limit && !check_n_limit) ? packet_size : 1;
 #pragma unroll
     for (index_t i = 0; i < item_cols; ++i) {
 #pragma unroll
@@ -619,35 +661,30 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
 
         // printf("m: %d * %d < %d n: %d < %d\n", j, wg_rows, mc, i, nc);
         if (in_range) {
-          store_packet<internal>(&(reg_res[0][i]), C + j * wg_rows * offset, j,
-                                 alpha, beta, item_id);
-        }
-        // if (internal || in_range) {
-        //   // when C is uninitialized the element of the C can be NaN, and
-        //   // Nan*0 will be NaN
-        //   if (is_beta_zero) {
-        //     // C[j * wg_rows] = alpha * reg_res[i * item_rows + j];
-        //   } else {
-        //     if (internal) {
-        //       vector_t a = collect_value<packet_size>(reg_res, j, i);
-        //       // vector_t a = vector_t{7};
-        //       vector_t b =
-        //           load_value<address_t::global_space>(aligned, C, j *
-        //           wg_rows);
+          // store_packet<!check_m_limit && !check_n_limit>(
+          //     reg_res, (C + j * (wg_rows * offset)), alpha, beta);
+          // if (is_beta_zero) {
+          //   C[j * wg_rows] = alpha * reg_res[0];
+          // } else {
+          //   C[j * wg_rows] = alpha * reg_res[0] + beta * C[j * wg_rows];
+          // }
+          vector_t out_vec{0};
 
-        //       store_value<address_t::global_space>(aligned, C, j * wg_rows,
-        //                                            alpha * a + beta * b);
-        //       // store_value<address_t::global_space>(aligned, C, j *
-        //       wg_rows,
-        //       // vector_t{value_t(item_id)});
-        //     } else {
-        //       // if (i * item_rows + j >= item_rows * item_cols)
-        //       //   printf("OUT OF BOUNDz\n");
-        //       C[j * wg_rows] = alpha * reg_res[j][i] + beta * C[j * wg_rows];
-        //       // alpha *reg_res[i * item_rows + j] + beta *C[j * wg_rows];
-        //     }
-        //   }
-        // }
+          out_vec.template load<address_t::private_space>(0, reg_res);
+          out_vec *= alpha;
+
+          if (!is_beta_zero) {
+            vector_t tmp{0};
+            tmp.template load<address_t::global_space>(
+                0, C + j * (wg_rows * offset));
+            tmp *= beta;
+            out_vec += tmp;
+          }
+
+          out_vec.template store<address_t::global_space>(
+              0, C + j * (wg_rows * offset));
+        }
+        reg_res += offset;
       }
       C += ldc;
     }
@@ -667,17 +704,16 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
     if (out_of_range) {
       return;
     }
-    constexpr bool internal =
-        !check_m_limit && !check_n_limit && !check_k_limit;
-    extract_block<internal, check_m_limit, check_k_limit, trans_a, block_rows,
-                  cl_elems, ldsa>(
-        item_id, A, lda, sA, [&](index_t ir, index_t cr) { return cr < m; },
-        [&](index_t ic, index_t cc) { return cc < k - ic; });
-    extract_block<internal, check_k_limit, check_n_limit, trans_b, cl_elems,
-                  block_cols, ldsb>(
-        item_id, B, ldb, sB,
-        [&](index_t ir, index_t cr) { return cr < k - ir; },
-        [&](index_t ic, index_t cc) { return cc < n; });
+    extract_block<!check_m_limit && !check_n_limit && !check_k_limit,
+                  check_m_limit, check_k_limit, trans_a, block_rows, cl_elems,
+                  ldsa>(item_id, A, lda, sA,
+                        [&](index_t ir, index_t cr) { return cr < m; },
+                        [&](index_t ic, index_t cc) { return cc < k - ic; });
+    extract_block<!check_m_limit && !check_n_limit && !check_k_limit,
+                  check_k_limit, check_n_limit, trans_b, cl_elems, block_cols,
+                  ldsb>(item_id, B, ldb, sB,
+                        [&](index_t ir, index_t cr) { return cr < k - ir; },
+                        [&](index_t ic, index_t cc) { return cc < n; });
   }
 
   template <bool trans, index_t lds, bool check_row_limit,
@@ -787,41 +823,8 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
             return in_row(item_id % rows * multiplier + ofs, 0);
           },
           in_range);
-
-      //   if (internal) {
-      //     // if (print_output) {
-      //     //   printf("T[%d] scratch[%d], ptr[%d]\n", item_id, col_ofs * lds,
-      //     //          col_ofs * ld);
-      //     // }
-      //     // load_val(ptr, col_ofs * ld, scratch, col_ofs * lds);
-      //     // if (item_id == 2) store_value(scratch, col_ofs * lds,
-      //     // vector_t(item_id));
-      //     // store_value(scratch, col_ofs * lds, vector_t(1));
-      //     if (!do_check<check_row_limit>(
-      //             in_row(item_id * multiplier % rows + multiplier, 0))) {
-      //       for (index_t ofs = 0; ofs < multiplier; ++ofs) {
-      //         element_t value{0};
-      //         if (do_check<check_row_limit>(
-      //                 in_row(item_id * multiplier % rows + ofs, 0))) {
-      //           value = ptr[col_ofs * ld + ofs];
-      //         }
-      //         scratch[col_ofs * lds + ofs] = value;
-      //       }
-      //     } else if (in_range) {
-      //       load_val<address_t::global_space, address_t::local_space>(
-      //           aligned, ptr, col_ofs * ld, scratch, col_ofs * lds);
-
-      //     } else {
-      //       store_value<address_t::local_space>(aligned, scratch, col_ofs *
-      //       lds,
-      //                                           vector_t(0));
-      //     }
-      //   } else {
-      //     scratch[col_ofs * lds] = in_range ? ptr[col_ofs * ld] :
-      //     element_t(0);
-      //     // scratch[col_ofs * lds] = in_range ? element_t(2) : element_t(0);
-      //   }
-      // }
+      // *(scratch + col_ofs * lds) =
+      //     in_range ? *(ptr + col_ofs * ld) : element_t(0);
     }
   }
   template <bool internal, bool check_row_limit, bool check_col_limit,
@@ -866,37 +869,39 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
    * @param reg_b  temporary register used to prefetch elements of B
    * @param reg_res  2D register array used to store the result C
    */
-  template <bool internal, typename ScratchPointerType>
+  template <index_t stride, typename ScratchPointerType>
   static SYCL_BLAS_INLINE void load_packet(element_t (&reg)[item_rows],
                                            ScratchPointerType ptr, index_t j) {
-    constexpr index_t stride = internal ? packet_size : 1;
+// constexpr index_t stride = internal ? packet_size : 1;
 #pragma unroll
     for (int i = 0; i < stride; i++) {
       reg[i + j * stride] = *(ptr + (i + j * wg_rows * stride));
     }
   }
-  template <bool internal, typename InputPointerType>
+  template <bool check_m_limit, bool check_n_limit, typename InputPointerType>
   static SYCL_BLAS_INLINE void compute_block_gemm(
       index_t item_id, InputPointerType B, InputPointerType A,
       element_t (&reg_a)[item_rows], element_t &reg_b,
-      element_t (&reg_res)[item_rows][item_cols]) noexcept {
+      element_t (&reg_res)[item_rows * item_cols]) noexcept {
     // NOTE: Adding "#pragma unroll" here reduces performance on AMD R9 Nano.
     //       Seems that the small reduction of arithmetic operations does not
     //       amortize the cost of loading the larger kernel binary resulting
     //       from loop unrollment.
-    constexpr index_t work_per_load = internal ? packet_size : 1;
+    constexpr index_t work_per_load =
+        !check_m_limit && !check_n_limit ? packet_size : 1;
     for (index_t i = 0; i < cl_elems; ++i) {
 #pragma unroll
       for (index_t j = 0; j < item_rows / work_per_load; ++j) {
         // reg_a[j] = A[j * wg_rows];
-        load_packet<internal>(reg_a, A, j);  // A[j * a_ofs];
+        load_packet<work_per_load>(reg_a, A, j);
       }
 #pragma unroll
       for (index_t j = 0; j < item_cols; ++j) {
         reg_b = *(B + j * ldsb);
 #pragma unroll
         for (index_t l = 0; l < item_rows; ++l) {
-          reg_res[l][j] = cl::sycl::mad(reg_a[l], reg_b, reg_res[l][j]);
+          reg_res[j * item_rows + l] =
+              cl::sycl::mad(reg_a[l], reg_b, reg_res[j * item_rows + l]);
         }
       }
       A = A + ldsa;
@@ -930,8 +935,8 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
   template <bool db, index_t o, index_t... os, typename P, typename... Ps>
   static SYCL_BLAS_INLINE typename std::enable_if<db>::type sync_smem(
       cl::sycl::nd_item<1> id, index_t &ofs_sign, P &s, Ps &... ss) noexcept {
-    s.ptr += ofs_sign * o;
-    s.ptr_vec += ofs_sign * o;
+    s += ofs_sign * o;
+    // s.ptr_vec += ofs_sign * o;
     sync_smem<db, os...>(id, ofs_sign, ss...);
   }
 
