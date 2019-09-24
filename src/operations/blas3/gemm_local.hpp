@@ -91,6 +91,7 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
   using address_t = cl::sycl::access::address_space;
 
   static constexpr index_t packet_size = vector_params::packet_size;
+  static constexpr bool aligned = false;
   template <typename PointerType>
   struct PointerWrapper {
     PointerType ptr;
@@ -515,7 +516,7 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
                   ldsa * cl_elems, ldsa * cl_elems>(id, ofs, s1, s2, s3, s4);
         // if (id.get_group(0) == 0) print_mat<0, ldsa, cl_elems>(item_id, s3);
         // if (id.get_group(0) == WG_TO_PRINT)
-        //   print_mat<WG_TO_PRINT, ldsa, cl_elems>(item_id, s3.ptr);
+        //   print_mat<WG_TO_PRINT, cl_elems, ldsb>(item_id, s1);
         // id.barrier();
         // if (id.get_group(0) == WG_TO_PRINT)
         //   print_array<item_rows * item_cols>(item_id, reg_res);
@@ -683,6 +684,17 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
 
           out_vec.template store<address_t::global_space>(
               0, C + j * (wg_rows * offset));
+          // out_vec = *reinterpret_cast<vector_t *>(reg_res) * alpha;
+
+          // if (!is_beta_zero) {
+          //   vector_t tmp{0};
+          //   tmp = *reinterpret_cast<vector_t *>(static_cast<element_t *>(C) +
+          //                                       j * (wg_rows * offset)) *
+          //         beta;
+          //   out_vec += tmp;
+          // }
+          // *reinterpret_cast<vector_t *>(static_cast<element_t *>(C) +
+          //                               j * (wg_rows * offset)) = out_vec;
         }
         reg_res += offset;
       }
@@ -715,13 +727,22 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
                         [&](index_t ir, index_t cr) { return cr < k - ir; },
                         [&](index_t ic, index_t cc) { return cc < n; });
   }
-
   template <bool trans, index_t lds, bool check_row_limit,
-            typename SrcPointerType, typename DestPointerType,
-            typename RowPredicate>
-  static SYCL_BLAS_INLINE typename std::enable_if<!trans>::type load_vector(
-      SrcPointerType src, index_t src_index, DestPointerType dest,
-      index_t dest_index, RowPredicate in_row, index_t item_id) {
+            bool isAligned = aligned, typename SrcPointerType,
+            typename DestPointerType, typename RowPredicate>
+  static SYCL_BLAS_INLINE typename std::enable_if<!trans && isAligned>::type
+  load_vector(SrcPointerType src, index_t src_index, DestPointerType dest,
+              index_t dest_index, RowPredicate in_row, index_t item_id) {
+    *reinterpret_cast<vector_t *>(static_cast<element_t *>(dest) + dest_index) =
+        *reinterpret_cast<vector_t *>(static_cast<element_t *>(src) +
+                                      src_index);
+  }
+  template <bool trans, index_t lds, bool check_row_limit,
+            bool isAligned = aligned, typename SrcPointerType,
+            typename DestPointerType, typename RowPredicate>
+  static SYCL_BLAS_INLINE typename std::enable_if<!trans && !isAligned>::type
+  load_vector(SrcPointerType src, index_t src_index, DestPointerType dest,
+              index_t dest_index, RowPredicate in_row, index_t item_id) {
     vector_t vec{0};
     vec.template load<address_t::global_space>(0, src + src_index);
     // vec = vector_t{static_cast<float>(item_id)};
