@@ -497,12 +497,12 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
         // A.ptr_vec += cl_elems * (trans_a ? 1 : lda);
         B += cl_elems * (trans_b ? ldb : 1);
         // B.ptr_vec += cl_elems * (trans_b ? ldb : 1);
-        k -= cl_elems;
+        if (id.get_group(0) == WG_TO_PRINT)
+          print_mat<WG_TO_PRINT, cl_elems, ldsb>(item_id, s1, k);
+        id.barrier();
         sync_smem<double_buffer, block_cols * ldsb, block_cols * ldsb,
                   ldsa * cl_elems, ldsa * cl_elems>(id, ofs, s1, s2, s3, s4);
-        // if (id.get_group(0) == WG_TO_PRINT)
-        //   print_array<item_rows * item_cols>(item_id, reg_res);
-        // id.barrier();
+        k -= cl_elems;
       }
 
       if (k > 0) {
@@ -512,12 +512,12 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
         compute_block_gemm<check_m_limit, check_n_limit>(item_id, s2, s4, reg_a,
                                                          reg_b, reg_res);
 
+        if (id.get_group(0) == WG_TO_PRINT)
+          print_mat<WG_TO_PRINT, cl_elems, ldsb>(item_id, s1, k);
+        id.barrier();
         sync_smem<double_buffer, block_cols * ldsb, block_cols * ldsb,
                   ldsa * cl_elems, ldsa * cl_elems>(id, ofs, s1, s2, s3, s4);
         // if (id.get_group(0) == 0) print_mat<0, ldsa, cl_elems>(item_id, s3);
-        // if (id.get_group(0) == WG_TO_PRINT)
-        //   print_mat<WG_TO_PRINT, cl_elems, ldsb>(item_id, s1);
-        // id.barrier();
         // if (id.get_group(0) == WG_TO_PRINT)
         //   print_array<item_rows * item_cols>(item_id, reg_res);
         // id.barrier();
@@ -669,13 +669,13 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
           // } else {
           //   C[j * wg_rows] = alpha * reg_res[0] + beta * C[j * wg_rows];
           // }
-          vector_t out_vec{0};
+          cl::sycl::vec<element_t, offset> out_vec{0};
 
           out_vec.template load<address_t::private_space>(0, reg_res);
           out_vec *= alpha;
 
           if (!is_beta_zero) {
-            vector_t tmp{0};
+            cl::sycl::vec<element_t, offset> tmp{0};
             tmp.template load<address_t::global_space>(
                 0, C + j * (wg_rows * offset));
             tmp *= beta;
@@ -719,33 +719,60 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
     extract_block<!check_m_limit && !check_n_limit && !check_k_limit,
                   check_m_limit, check_k_limit, trans_a, block_rows, cl_elems,
                   ldsa>(item_id, A, lda, sA,
-                        [&](index_t ir, index_t cr) { return cr < m; },
-                        [&](index_t ic, index_t cc) { return cc < k - ic; });
+                        [&](index_t ir, index_t cr)
+                            SYCL_BLAS_ALWAYS_INLINE { return cr < m; },
+                        [&](index_t ic, index_t cc)
+                            SYCL_BLAS_ALWAYS_INLINE { return cc < k - ic; });
     extract_block<!check_m_limit && !check_n_limit && !check_k_limit,
                   check_k_limit, check_n_limit, trans_b, cl_elems, block_cols,
                   ldsb>(item_id, B, ldb, sB,
-                        [&](index_t ir, index_t cr) { return cr < k - ir; },
-                        [&](index_t ic, index_t cc) { return cc < n; });
+                        [&](index_t ir, index_t cr)
+                            SYCL_BLAS_ALWAYS_INLINE { return cr < k - ir; },
+                        [&](index_t ic, index_t cc)
+                            SYCL_BLAS_ALWAYS_INLINE { return cc < n; });
   }
+  // template <bool trans, index_t lds, bool check_row_limit,
+  //           typename SrcPointerType, typename DestPointerType,
+  //           typename RowPredicate>
+  // static SYCL_BLAS_INLINE typename std::enable_if<!trans>::type load_vector(
+  //     SrcPointerType src, index_t src_index, DestPointerType dest,
+  //     index_t dest_index, RowPredicate in_row, bool in_range, index_t
+  //     item_id) {
+  //   *reinterpret_cast<vector_t *>(static_cast<element_t *>(dest) +
+  //   dest_index) =
+  //       *reinterpret_cast<vector_t *>(static_cast<element_t *>(src) +
+  //                                     src_index);
+  // }
   template <bool trans, index_t lds, bool check_row_limit,
-            bool isAligned = aligned, typename SrcPointerType,
-            typename DestPointerType, typename RowPredicate>
-  static SYCL_BLAS_INLINE typename std::enable_if<!trans && isAligned>::type
-  load_vector(SrcPointerType src, index_t src_index, DestPointerType dest,
-              index_t dest_index, RowPredicate in_row, index_t item_id) {
-    *reinterpret_cast<vector_t *>(static_cast<element_t *>(dest) + dest_index) =
-        *reinterpret_cast<vector_t *>(static_cast<element_t *>(src) +
-                                      src_index);
-  }
-  template <bool trans, index_t lds, bool check_row_limit,
-            bool isAligned = aligned, typename SrcPointerType,
-            typename DestPointerType, typename RowPredicate>
-  static SYCL_BLAS_INLINE typename std::enable_if<!trans && !isAligned>::type
-  load_vector(SrcPointerType src, index_t src_index, DestPointerType dest,
-              index_t dest_index, RowPredicate in_row, index_t item_id) {
+            typename SrcPointerType, typename DestPointerType,
+            typename RowPredicate>
+  static SYCL_BLAS_INLINE
+      typename std::enable_if<!trans && check_row_limit>::type
+      load_vector(SrcPointerType src, index_t src_index, DestPointerType dest,
+                  index_t dest_index, RowPredicate in_row, bool in_range,
+                  index_t item_id) {
     vector_t vec{0};
     vec.template load<address_t::global_space>(0, src + src_index);
-    // vec = vector_t{static_cast<float>(item_id)};
+// vec = vector_t{static_cast<float>(item_id)};
+#pragma unroll
+    for (index_t i = 0; i < packet_size; ++i) {
+      const bool in_range = do_check<check_row_limit>(in_row(i));
+      *(dest + dest_index + i) =
+          in_range ? reinterpret_cast<value_t *>(&vec)[i] : value_t(i);
+    }
+  }
+  template <bool trans, index_t lds, bool check_row_limit,
+            typename SrcPointerType, typename DestPointerType,
+            typename RowPredicate>
+  static SYCL_BLAS_INLINE
+      typename std::enable_if<!trans && !check_row_limit>::type
+      load_vector(SrcPointerType src, index_t src_index, DestPointerType dest,
+                  index_t dest_index, RowPredicate in_row, bool in_range,
+                  index_t item_id) {
+    vector_t vec{0};
+    if (in_range) {
+      vec.template load<address_t::global_space>(0, src + src_index);
+    }
     vec.template store<address_t::local_space>(0, dest + dest_index);
   }
   template <bool trans, index_t lds, bool check_row_limit,
@@ -753,7 +780,7 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
             typename RowPredicate>
   static SYCL_BLAS_INLINE typename std::enable_if<trans>::type load_vector(
       SrcPointerType src, index_t src_index, DestPointerType dest,
-      index_t dest_index, RowPredicate in_row, index_t item_id) {
+      index_t dest_index, RowPredicate in_row, bool in_range, index_t item_id) {
     vector_t vec{0};
     vec.template load<address_t::global_space>(0, src + src_index);
 // vec = vector_t{static_cast<float>(item_id)};
@@ -773,9 +800,8 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
       SrcPointerType src, index_t src_index, DestPointerType dest,
       index_t dest_index, index_t item_id, RowPredicate in_row, bool in_range) {
     load_vector<trans, lds, check_row_limit>(src, src_index, dest, dest_index,
-                                             in_row, item_id);
+                                             in_row, in_range, item_id);
   }
-
   template <bool internal, bool check_row_limit = false, bool trans = false,
             index_t lds = 0, index_t p_size = packet_size,
             typename SrcPointerType, typename DestPointerType,
@@ -783,8 +809,15 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
   static SYCL_BLAS_INLINE typename std::enable_if<!internal>::type load_value(
       SrcPointerType src, index_t src_index, DestPointerType dest,
       index_t dest_index, index_t item_id, RowPredicate in_row, bool in_range) {
-    *(dest + dest_index) = in_range ? *(src + src_index) : value_t{0};
-    // dest[dest_index] = value_t(item_id);
+#pragma unroll
+    for (index_t i = 0; i < packet_size; i++) {
+      *(dest + dest_index + i) =
+          in_row(i) ? *(src + src_index + i) : value_t{0};
+    }
+    // if (in_range) {
+    //   *(dest + dest_index) = *(src + src_index);
+    // }
+    // *(dest + dest_index) = value_t(item_id);
   }
 
   /*!
@@ -826,7 +859,7 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
       index_t item_id, InputPointerType ptr, index_t ld,
       ScratchPointerType scratch, RowPredicate in_row, ColPredicate in_col) {
     constexpr index_t bs = rows * cols;
-    constexpr index_t multiplier = internal ? packet_size : 1;
+    constexpr index_t multiplier = packet_size;
     // const bool aligned = ld % packet_size == 0;
 #pragma unroll
     for (index_t i = 0; i < (bs - 1) / (wg_size * multiplier) + 1; ++i) {
@@ -835,13 +868,18 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
         continue;
       const index_t col_ofs = i * ((wg_size * multiplier) / rows);
       const bool in_range =
-          do_check<check_row_limit>(in_row(item_id % rows * multiplier, 0)) &&
+          do_check<check_row_limit>(in_row(item_id * multiplier % rows, 0)) &&
           do_check<check_col_limit>(
               in_col(item_id * multiplier / rows, col_ofs));
       load_value<internal, check_row_limit, false, lds>(
           ptr, col_ofs * ld, scratch, col_ofs * lds, item_id,
-          [&](index_t ofs) {
-            return in_row(item_id % rows * multiplier + ofs, 0);
+          [&](index_t ofs) SYCL_BLAS_ALWAYS_INLINE {
+            // if (in_row(item_id % rows * multiplier, ofs) && item_id == 0)
+            //   printf("[%d] %d < %d - %d mod %d (%d) * %d (%d)\n", item_id,
+            //   ofs,
+            //          2, item_id, rows, item_id % rows, multiplier,
+            //          item_id % rows * multiplier);
+            return in_row(item_id * multiplier % rows, ofs);
           },
           in_range);
       // *(scratch + col_ofs * lds) =
@@ -974,8 +1012,9 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
   }
   template <index_t num, index_t leading_dim, index_t other_dim,
             typename PointerType>
-  static SYCL_BLAS_INLINE void print_mat(index_t id, PointerType ptr) {
-    if (id == 0) printf("======Matrix[%d]======\n", num);
+  static SYCL_BLAS_INLINE void print_mat(index_t id, PointerType ptr,
+                                         index_t k) {
+    if (id == 0) printf("======Matrix[%d]======\n", k);
     for (index_t i = 0; i < leading_dim; i++) {
       for (index_t j = 0; j < other_dim; j++) {
         if (id == 0) {

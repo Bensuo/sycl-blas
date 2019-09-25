@@ -40,19 +40,19 @@ const auto combi = ::testing::Combine(::testing::Values(5),  // batch_size
 );
 bool print_matrices = false;
 #else
-const auto combi = ::testing::Combine(::testing::Values(1),       // batch_size
-                                      ::testing::Values(128),     // m
-                                      ::testing::Values(576),     // n
-                                      ::testing::Values(401408),  // k
-                                      ::testing::Values('n'),     // transa
-                                      ::testing::Values('n'),     // transb
-                                      ::testing::Values(1.0),     // alpha
-                                      ::testing::Values(1.0),     // beta
-                                      ::testing::Values(1),       // lda_mul
-                                      ::testing::Values(1),       // ldb_mul
-                                      ::testing::Values(1)        // ldc_mul
+const auto combi = ::testing::Combine(::testing::Values(1),    // batch_size
+                                      ::testing::Values(32),   // m
+                                      ::testing::Values(32),   // n
+                                      ::testing::Values(33),   // k
+                                      ::testing::Values('n'),  // transa
+                                      ::testing::Values('n'),  // transb
+                                      ::testing::Values(1.0),  // alpha
+                                      ::testing::Values(0.0),  // beta
+                                      ::testing::Values(1),    // lda_mul
+                                      ::testing::Values(1),    // ldb_mul
+                                      ::testing::Values(1)     // ldc_mul
 );
-bool print_matrices = false;
+bool print_matrices = true;
 #endif
 template <typename T>
 using combination_t =
@@ -151,8 +151,8 @@ void run_test(const combination_t<scalar_t> combi) {
   increment(trans_a, a_m, dim_a, lda_mul);
   increment(trans_b, b_m, dim_b, ldb_mul, 0.5f);
   // increment(false,c_m_gpu, dim_c[0], dim_c[1], ldc_mul);
-  fill_random(a_m);
-  fill_random(b_m);
+  // fill_random(a_m);
+  // fill_random(b_m);
   // fill_random(c_m_gpu);
   std::copy(c_m_gpu.begin(), c_m_gpu.end(), c_m_cpu.begin());
   print_matrix(trans_a, a_m, dim_a, lda_mul, 3, "Matrix A");
