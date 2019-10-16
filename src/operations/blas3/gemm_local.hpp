@@ -28,10 +28,39 @@
 #include "gemm_common.hpp"
 
 namespace blas {
+#define SHOULD_PRINT
 #define ID_TO_PRINT 0
 #define WG_TO_PRINT 0
 // Vectorization stuff
-
+enum class access_type { coalesced, vectorized };
+}  // namespace blas
+template <bool trans, size_t packet_size, typename value_t>
+struct Packetize {
+  template <access_type access_t, bool check_row = false,
+            typename packet_t = cl::sycl::vec<value_t, packet_size>,
+            typename SrcPointerType, typename DestPointerType, typename index_t>
+  static SYCL_BLAS_INLINE
+      typename std::enable_if<(access_t == access_type::coaleseced),
+                              packet_t>::type
+      load(bool in_range, SrcPointerType src, index_t src_offset,
+           DestPointerType dest, index_t dest_index) {
+#pragma unroll
+    for (index_t i = 0; i < packet_size; i++) {
+      *(dest + dest_index + i) = in_range ? *(src + src_index + i) : value_t{0};
+      // *(dest + dest_index + i) = value_t(item_id);
+    }
+  }
+  template <access_type access_t, bool check_row = false,
+            typename packet_t = cl::sycl::vec<value_t, packet_size> >
+  static SYCL_BLAS_INLINE typename std::enable_if<
+      (access_t == access_type::vectorized && check_row), packet_t>::type
+  load() {}
+  template <access_type access_t, bool check_row = false,
+            typename packet_t = cl::sycl::vec<value_t, packet_size> >
+  static SYCL_BLAS_INLINE typename std::enable_if<
+      (access_t == access_type::vectorized && !check_row), packet_t>::type
+  load() {}
+};
 template <typename T, size_t Size>
 struct VectorizationParams {
 #ifdef GEMM_VECTORISATION_SUPPORT
@@ -181,7 +210,7 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
         b_(B),
         c_(C),
         alpha_(alpha),
-        beta_(beta),
+        beta_(beta / alpha),
         m_(a_.get_size_row()),
         n_(b_.get_size_col()),
         k_(a_.get_size_col()),
@@ -352,10 +381,11 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
     //          : (wg_row + item_id % block_rows) + (item_id / block_rows) *
     //          lda_);
 
+    // printf("[%d] %d - %d - (%d mod %d) = %d\n", item_id, m_, wg_row,
+    //        item_id_ofs, block_rows, m_ - wg_row - (item_id_ofs %
+    //        block_rows));
     m_ = m_ - wg_row -
-         (trans_a ? item_id / cl_elems * vector_offset
-                  : item_id % block_rows * vector_offset);
-
+         (trans_a ? item_id_ofs / cl_elems : item_id_ofs % block_rows);
     // s1.ptr = scratch +
     //          (trans_b ? item_id / block_cols + (item_id % block_cols) * ldsb
     //                   : item_id % cl_elems + (item_id / cl_elems) * ldsb);
@@ -456,12 +486,12 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
   // }
 
   /*!
-   * @brief Compute a GEMM of a block-row of A (transpose) and a block-column
-   *        of B (transpose).
+   * @brief Compute a GEMM of a block-row of A (transpose) and a
+   * block-column of B (transpose).
    *
    * This is a collective operation between all items in as work-group.
-   * This method should actually be a generic lambda (as in C++20), it only
-   * forwards parameters from GemmFactory::run().
+   * This method should actually be a generic lambda (as in C++20), it
+   * only forwards parameters from GemmFactory::run().
    *
    * @tparam check_m_limit  iff true, check if row indexes of C are
    *                        out-of-bound
@@ -471,7 +501,7 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
   template <bool double_buffer, bool check_m_limit, bool check_n_limit,
             typename InputPointerType, typename OutputPointerType,
             typename ScratchPointerType>
-  static SYCL_BLAS_INLINE void compute_panel_gemm(
+  SYCL_BLAS_INLINE void compute_panel_gemm(
       cl::sycl::nd_item<1> id, index_t item_id, index_t m, index_t mc,
       index_t n, index_t nc, index_t orig_k, index_t k, index_t a_size,
       index_t b_size, index_t c_size, element_t alpha, InputPointerType orig_A,
@@ -497,9 +527,9 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
         // A.ptr_vec += cl_elems * (trans_a ? 1 : lda);
         B += cl_elems * (trans_b ? ldb : 1);
         // B.ptr_vec += cl_elems * (trans_b ? ldb : 1);
-        if (id.get_group(0) == WG_TO_PRINT)
-          print_mat<WG_TO_PRINT, cl_elems, ldsb>(item_id, s1, k);
-        id.barrier();
+        // if (id.get_group(0) == WG_TO_PRINT)
+        //   print_mat<WG_TO_PRINT, ldsa, cl_elems>(item_id, s3, k);
+        // id.barrier();
         sync_smem<double_buffer, block_cols * ldsb, block_cols * ldsb,
                   ldsa * cl_elems, ldsa * cl_elems>(id, ofs, s1, s2, s3, s4);
         k -= cl_elems;
@@ -512,13 +542,13 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
         compute_block_gemm<check_m_limit, check_n_limit>(item_id, s2, s4, reg_a,
                                                          reg_b, reg_res);
 
-        if (id.get_group(0) == WG_TO_PRINT)
-          print_mat<WG_TO_PRINT, cl_elems, ldsb>(item_id, s1, k);
-        id.barrier();
+        // if (id.get_group(0) == WG_TO_PRINT)
+        //   print_mat<WG_TO_PRINT, ldsa, cl_elems>(item_id, s3, k);
+        // id.barrier();
         sync_smem<double_buffer, block_cols * ldsb, block_cols * ldsb,
                   ldsa * cl_elems, ldsa * cl_elems>(id, ofs, s1, s2, s3, s4);
-        // if (id.get_group(0) == 0) print_mat<0, ldsa, cl_elems>(item_id, s3);
-        // if (id.get_group(0) == WG_TO_PRINT)
+        // if (id.get_group(0) == 0) print_mat<0, ldsa, cl_elems>(item_id,
+        // s3); if (id.get_group(0) == WG_TO_PRINT)
         //   print_array<item_rows * item_cols>(item_id, reg_res);
         // id.barrier();
       }
@@ -533,43 +563,37 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
       orig_C += (c_size * batch_stride);
       // orig_C.ptr_vec += (c_size * batch_stride);
       k = orig_k;
-      // batch_size_ must be signed as the negative value has meaning here.
+      // batch_size_ must be signed as the negative value has meaning
+      // here.
       batch_size -= batch_stride;
     } while (batch_size > wg_batch_id);
   }
 
   //   template <index_t p_size = packet_size>
   //   static SYCL_BLAS_INLINE typename std::enable_if<(p_size == 1),
-  //   vector_t>::type collect_value(element_t (&reg_res)[item_rows][item_cols],
-  //   index_t row,
+  //   vector_t>::type collect_value(element_t
+  //   (&reg_res)[item_rows][item_cols], index_t row,
   //                 index_t col) {
   //     return reg_res[row][col];
   //   }
   //   template <index_t p_size = packet_size>
   //   static SYCL_BLAS_INLINE typename std::enable_if<(p_size > 1),
-  //   vector_t>::type collect_value(element_t (&reg_res)[item_rows][item_cols],
-  //   index_t row,
+  //   vector_t>::type collect_value(element_t
+  //   (&reg_res)[item_rows][item_cols], index_t row,
   //                 index_t col) {
   //     vector_t value{0};
   // #pragma unroll
   //     for (index_t i = 0; i < packet_size; ++i) {
-  //       reinterpret_cast<element_t *>(&value)[i] = reg_res[row + i][col];
+  //       reinterpret_cast<element_t *>(&value)[i] = reg_res[row +
+  //       i][col];
   //     }
   //     return value;
   //   }
-  template <bool internal, index_t p_size = packet_size,
-            typename OutputPointerType>
-  static SYCL_BLAS_INLINE typename std::enable_if<!internal>::type store_packet(
-      element_t *reg, OutputPointerType out_ptr, element_t alpha,
-      element_t beta) {
-    *out_ptr = alpha * *reg + beta * *out_ptr;
-    // *out_ptr = item_id;
-  }
   /*template<typename T = vector_t>
     static SYCL_BLAS_INLINE typename std::enable_if<typename
     std::is_same<vector_t, cl::sycl::float4>::type, float >::type
-    scalarize(Index i, x){ switch(i ) { case 1 : return x.x() case 2: return
-    x.y(); case 3: return x.z(); case 4 return x.w();
+    scalarize(Index i, x){ switch(i ) { case 1 : return x.x() case 2:
+    return x.y(); case 3: return x.z(); case 4 return x.w();
       }
       __builtin_unreachable();
     }*/
@@ -597,12 +621,20 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
   //   }
   //   __builtin_unreachable();
   // }
+  template <bool internal, index_t p_size = packet_size,
+            typename OutputPointerType>
+  static SYCL_BLAS_INLINE typename std::enable_if<!internal>::type store_packet(
+      element_t *reg, OutputPointerType out_ptr, element_t alpha,
+      element_t beta, const index_t &mc, const index_t &nc) {
+    *out_ptr = alpha * *reg + beta * *out_ptr;
+    // *out_ptr = item_id;
+  }
 
   template <bool internal, index_t p_size = packet_size,
             typename OutputPointerType>
   static SYCL_BLAS_INLINE typename std::enable_if<internal>::type store_packet(
       element_t *reg, OutputPointerType out_ptr, element_t &alpha,
-      element_t &beta) {
+      element_t &beta, const index_t &, const index_t &) {
     vector_t out_vec{0};
     // value_t* out[stride];
     // #pragma unroll
@@ -638,8 +670,8 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
    * @param beta  scaling factor of C
    * @param C  pointer to the first element of C
    * @param ldc  leading dimension of C
-   * @param reg_res  2D register array containing the partial resull of C per
-   * thread
+   * @param reg_res  2D register array containing the partial resull of C
+   * per thread
    */
 
   template <bool check_m_limit, bool check_n_limit, typename OutputPointerType>
@@ -662,25 +694,26 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
 
         // printf("m: %d * %d < %d n: %d < %d\n", j, wg_rows, mc, i, nc);
         if (in_range) {
-          // store_packet<!check_m_limit && !check_n_limit>(
-          //     reg_res, (C + j * (wg_rows * offset)), alpha, beta);
+          store_packet<!check_m_limit && !check_n_limit>(
+              reg_res, (C + j * (wg_rows * offset)), alpha, beta, mc, nc);
           // if (is_beta_zero) {
           //   C[j * wg_rows] = alpha * reg_res[0];
           // } else {
-          //   C[j * wg_rows] = alpha * reg_res[0] + beta * C[j * wg_rows];
+          //   C[j * wg_rows] = alpha * reg_res[0] + beta * C[j *
+          //   wg_rows];
           // }
           cl::sycl::vec<element_t, offset> out_vec{0};
 
           out_vec.template load<address_t::private_space>(0, reg_res);
           out_vec *= alpha;
 
-          if (!is_beta_zero) {
-            cl::sycl::vec<element_t, offset> tmp{0};
-            tmp.template load<address_t::global_space>(
-                0, C + j * (wg_rows * offset));
-            tmp *= beta;
-            out_vec += tmp;
-          }
+          // if (!is_beta_zero) {
+          //   cl::sycl::vec<element_t, offset> tmp{0};
+          //   tmp.template load<address_t::global_space>(
+          //       0, C + j * (wg_rows * offset));
+          //   tmp *= beta;
+          //   out_vec += tmp;
+          // }
 
           out_vec.template store<address_t::global_space>(
               0, C + j * (wg_rows * offset));
@@ -688,13 +721,16 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
 
           // if (!is_beta_zero) {
           //   vector_t tmp{0};
-          //   tmp = *reinterpret_cast<vector_t *>(static_cast<element_t *>(C) +
-          //                                       j * (wg_rows * offset)) *
+          //   tmp = *reinterpret_cast<vector_t *>(static_cast<element_t
+          //   *>(C) +
+          //                                       j * (wg_rows * offset))
+          //                                       *
           //         beta;
           //   out_vec += tmp;
           // }
           // *reinterpret_cast<vector_t *>(static_cast<element_t *>(C) +
-          //                               j * (wg_rows * offset)) = out_vec;
+          //                               j * (wg_rows * offset)) =
+          //                               out_vec;
         }
         reg_res += offset;
       }
@@ -719,22 +755,31 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
     extract_block<!check_m_limit && !check_n_limit && !check_k_limit,
                   check_m_limit, check_k_limit, trans_a, block_rows, cl_elems,
                   ldsa>(item_id, A, lda, sA,
-                        [&](index_t ir, index_t cr)
-                            SYCL_BLAS_ALWAYS_INLINE { return cr < m; },
-                        [&](index_t ic, index_t cc)
-                            SYCL_BLAS_ALWAYS_INLINE { return cc < k - ic; });
+                        [&](index_t ir, index_t cr) SYCL_BLAS_ALWAYS_INLINE {
+                          // printf("[%d] row: %d < %d\n", item_id, cr, m);
+                          return cr < m;
+                        },
+                        [&](index_t ic, index_t cc) SYCL_BLAS_ALWAYS_INLINE {
+                          // printf("[%d]col: %d < %d - %d\n", item_id, cc, k,
+                          // ic);
+                          return cc < k - ic;
+                        });
     extract_block<!check_m_limit && !check_n_limit && !check_k_limit,
                   check_k_limit, check_n_limit, trans_b, cl_elems, block_cols,
                   ldsb>(item_id, B, ldb, sB,
-                        [&](index_t ir, index_t cr)
-                            SYCL_BLAS_ALWAYS_INLINE { return cr < k - ir; },
+                        [&](index_t ir, index_t cr) SYCL_BLAS_ALWAYS_INLINE {
+                          // printf("[%d] %d < %d - %d\n", item_id, cr, k,
+                          // ir);
+                          return cr < k - ir;
+                        },
                         [&](index_t ic, index_t cc)
                             SYCL_BLAS_ALWAYS_INLINE { return cc < n; });
   }
   // template <bool trans, index_t lds, bool check_row_limit,
   //           typename SrcPointerType, typename DestPointerType,
   //           typename RowPredicate>
-  // static SYCL_BLAS_INLINE typename std::enable_if<!trans>::type load_vector(
+  // static SYCL_BLAS_INLINE typename std::enable_if<!trans>::type
+  // load_vector(
   //     SrcPointerType src, index_t src_index, DestPointerType dest,
   //     index_t dest_index, RowPredicate in_row, bool in_range, index_t
   //     item_id) {
@@ -764,11 +809,9 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
   template <bool trans, index_t lds, bool check_row_limit,
             typename SrcPointerType, typename DestPointerType,
             typename RowPredicate>
-  static SYCL_BLAS_INLINE
-      typename std::enable_if<!trans && !check_row_limit>::type
-      load_vector(SrcPointerType src, index_t src_index, DestPointerType dest,
-                  index_t dest_index, RowPredicate in_row, bool in_range,
-                  index_t item_id) {
+  static SYCL_BLAS_INLINE typename std::enable_if<!trans>::type load_vector(
+      SrcPointerType src, index_t src_index, DestPointerType dest,
+      index_t dest_index, RowPredicate in_row, bool in_range, index_t item_id) {
     vector_t vec{0};
     if (in_range) {
       vec.template load<address_t::global_space>(0, src + src_index);
@@ -811,13 +854,9 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
       index_t dest_index, index_t item_id, RowPredicate in_row, bool in_range) {
 #pragma unroll
     for (index_t i = 0; i < packet_size; i++) {
-      *(dest + dest_index + i) =
-          in_row(i) ? *(src + src_index + i) : value_t{0};
+      *(dest + dest_index + i) = in_range ? *(src + src_index + i) : value_t{0};
+      // *(dest + dest_index + i) = value_t(item_id);
     }
-    // if (in_range) {
-    //   *(dest + dest_index) = *(src + src_index);
-    // }
-    // *(dest + dest_index) = value_t(item_id);
   }
 
   /*!
@@ -826,7 +865,8 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
    *
    * This is a collective operation on all items in a work group.
    *
-   * @tparam check_row_limit  iff true, check the row out-of-bound condition
+   * @tparam check_row_limit  iff true, check the row out-of-bound
+   * condition
    * @tparam check_col_limit  iff true, check the column out-of-bound
    * condition
    * @tparam trans  iff true, transpose the matrix
@@ -834,8 +874,8 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
    * @tparam cols  number of columns in the block
    * @tparam lds  leading dimension of the block in shared memory
    * @tparam InputPointerType  pointer type of the input matrix
-   * @tparam ScratchPointerType  pointer type of the memory used to store the
-   *                             extracted block
+   * @tparam ScratchPointerType  pointer type of the memory used to store
+   * the extracted block
    * @tparam RowPredicate  row out-of-bound condition type
    * @tparam ColPredicate  column out-of-bound condition type
    *
@@ -843,9 +883,9 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
    * @param ptr  pointer to the input matrix with proper item-dependent
    * offset, see GemmFactory::run() for details
    * @param ld  the leading dimension of the input matrix
-   * @param scratch  the pointer to memory where the output block is stored,
-   *                 with proper item-dependent offset, see GemmFactory::run()
-   *                 for details
+   * @param scratch  the pointer to memory where the output block is
+   * stored, with proper item-dependent offset, see GemmFactory::run() for
+   * details
    * @param in_row  a predicate which checks whether a row index is within
    *                matrix bounds
    * @param in_col  a predicate which checks whether a col index is within
@@ -859,7 +899,7 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
       index_t item_id, InputPointerType ptr, index_t ld,
       ScratchPointerType scratch, RowPredicate in_row, ColPredicate in_col) {
     constexpr index_t bs = rows * cols;
-    constexpr index_t multiplier = packet_size;
+    constexpr index_t multiplier = internal ? packet_size : 1;
     // const bool aligned = ld % packet_size == 0;
 #pragma unroll
     for (index_t i = 0; i < (bs - 1) / (wg_size * multiplier) + 1; ++i) {
@@ -868,18 +908,19 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
         continue;
       const index_t col_ofs = i * ((wg_size * multiplier) / rows);
       const bool in_range =
-          do_check<check_row_limit>(in_row(item_id * multiplier % rows, 0)) &&
+          do_check<check_row_limit>(in_row((item_id * multiplier) % rows, 0)) &&
           do_check<check_col_limit>(
               in_col(item_id * multiplier / rows, col_ofs));
       load_value<internal, check_row_limit, false, lds>(
           ptr, col_ofs * ld, scratch, col_ofs * lds, item_id,
           [&](index_t ofs) SYCL_BLAS_ALWAYS_INLINE {
-            // if (in_row(item_id % rows * multiplier, ofs) && item_id == 0)
-            //   printf("[%d] %d < %d - %d mod %d (%d) * %d (%d)\n", item_id,
-            //   ofs,
+            // if (in_row(item_id % rows * multiplier, ofs) && item_id ==
+            // 0)
+            //   printf("[%d] %d < %d - %d mod %d (%d) * %d (%d)\n",
+            //   item_id, ofs,
             //          2, item_id, rows, item_id % rows, multiplier,
             //          item_id % rows * multiplier);
-            return in_row(item_id * multiplier % rows, ofs);
+            return in_row(((item_id * multiplier) % rows) + ofs, 0);
           },
           in_range);
       // *(scratch + col_ofs * lds) =
@@ -894,7 +935,7 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
       index_t item_id, InputPointerType ptr, index_t ld,
       ScratchPointerType scratch, RowPredicate in_row, ColPredicate in_col) {
     const index_t bs = rows * cols;
-    constexpr index_t multiplier = internal ? packet_size : 1;
+    constexpr index_t multiplier = packet_size;
 #pragma unroll
     for (index_t i = 0; i < (bs - 1) / (wg_size * multiplier) + 1; ++i) {
       if (!do_check<((bs % (wg_size * multiplier)) != 0)>(
@@ -942,10 +983,11 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
       index_t item_id, InputPointerType B, InputPointerType A,
       element_t (&reg_a)[item_rows], element_t &reg_b,
       element_t (&reg_res)[item_rows * item_cols]) noexcept {
-    // NOTE: Adding "#pragma unroll" here reduces performance on AMD R9 Nano.
-    //       Seems that the small reduction of arithmetic operations does not
-    //       amortize the cost of loading the larger kernel binary resulting
-    //       from loop unrollment.
+    // NOTE: Adding "#pragma unroll" here reduces performance on AMD R9
+    // Nano.
+    //       Seems that the small reduction of arithmetic operations does
+    //       not amortize the cost of loading the larger kernel binary
+    //       resulting from loop unrollment.
     constexpr index_t work_per_load =
         !check_m_limit && !check_n_limit ? packet_size : 1;
     for (index_t i = 0; i < cl_elems; ++i) {
@@ -970,7 +1012,8 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
     //     for (index_t j = 0; j < item_cols; ++j) {
     // #pragma unroll
     //       for (index_t l = 0; l < item_rows; ++l) {
-    //         if (item_id == 0) printf("[%d][%d] %f\n", l, j, reg_res[l][j]);
+    //         if (item_id == 0) printf("[%d][%d] %f\n", l, j,
+    //         reg_res[l][j]);
     //       }
     //     }
   }
@@ -1014,6 +1057,7 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
             typename PointerType>
   static SYCL_BLAS_INLINE void print_mat(index_t id, PointerType ptr,
                                          index_t k) {
+#ifdef SHOULD_PRINT
     if (id == 0) printf("======Matrix[%d]======\n", k);
     for (index_t i = 0; i < leading_dim; i++) {
       for (index_t j = 0; j < other_dim; j++) {
@@ -1023,6 +1067,7 @@ class Gemm<input_t, output_t, DoubleBuffer, NbcA, NbcB, ClSize, TileType,
       }
       if (id == 0) printf("\n");
     }
+#endif
   }
   template <index_t size, typename PointerType>
   static SYCL_BLAS_INLINE void print_array(index_t id, PointerType ptr) {

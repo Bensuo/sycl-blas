@@ -30,20 +30,20 @@ const auto combi = ::testing::Combine(::testing::Values(5),  // batch_size
                                       ::testing::Values(1, 11, 39, 64),   // m
                                       ::testing::Values(63, 257, 2, 31),  // n
                                       ::testing::Values(2, 67, 253, 65),  // k
-                                      ::testing::Values('n', 't'),  // transa
-                                      ::testing::Values('n', 't'),  // transb
-                                      ::testing::Values(1.5),       // alpha
-                                      ::testing::Values(1.0),       // beta
-                                      ::testing::Values(2),         // lda_mul
-                                      ::testing::Values(3),         // ldb_mul
-                                      ::testing::Values(2)          // ldc_mul
+                                      ::testing::Values('n'),  // transa
+                                      ::testing::Values('n'),  // transb
+                                      ::testing::Values(1.5),  // alpha
+                                      ::testing::Values(1.0),  // beta
+                                      ::testing::Values(2),    // lda_mul
+                                      ::testing::Values(3),    // ldb_mul
+                                      ::testing::Values(2)     // ldc_mul
 );
 bool print_matrices = false;
 #else
 const auto combi = ::testing::Combine(::testing::Values(1),    // batch_size
-                                      ::testing::Values(32),   // m
+                                      ::testing::Values(31),   // m
                                       ::testing::Values(32),   // n
-                                      ::testing::Values(33),   // k
+                                      ::testing::Values(32),   // k
                                       ::testing::Values('n'),  // transa
                                       ::testing::Values('n'),  // transb
                                       ::testing::Values(1.0),  // alpha
