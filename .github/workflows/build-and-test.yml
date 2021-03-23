@@ -4,7 +4,7 @@ on:
 # Run only on pushes to master to avoid triggering too many builds
 # Individual branches can be run manually if desired.
   push:
-    branches: [ master ]
+    branches: [ master, Actions-Case-Fix ]
 #Run on any pull request, regardless of target branch.
   pull_request:
 # This allows manual triggering of the workflow through the Actions tab
