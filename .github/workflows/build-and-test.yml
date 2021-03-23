@@ -1,6 +1,7 @@
 name: Build and Test
 
 on:
+# Test
 # Run only on pushes to master to avoid triggering too many builds
 # Individual branches can be run manually if desired.
   push:
